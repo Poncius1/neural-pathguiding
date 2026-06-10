@@ -1,4 +1,4 @@
-@'
+
 # Neural Path Guiding
 
 Discrete neural directional sampling for variance reduction in physically based path tracing.
@@ -19,4 +19,3 @@ Muestreo direccional neural para reducción de varianza en Path Tracing físicam
 - `data/`: generated datasets, ignored by Git.
 - `outputs/`: rendered images and metrics, ignored by Git.
 - `checkpoints/`: trained model weights, ignored by Git.
-'@ | Set-Content README.md
