@@ -1,0 +1,13 @@
+name: neural-guiding
+channels:
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - --extra-index-url https://download.pytorch.org/whl/cu118
+      - numpy
+      - mitsuba
+      - torch
+      - torchvision
+      - torchaudio

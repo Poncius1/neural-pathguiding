@@ -1,0 +1,14 @@
+
+[project]
+name = "neural-path-guiding"
+version = "0.1.0"
+description = "Discrete neural path guiding prototype for physically based path tracing."
+readme = "README.md"
+requires-python = ">=3.11"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
