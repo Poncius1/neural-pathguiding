@@ -8,6 +8,8 @@ dependencies:
       - --extra-index-url https://download.pytorch.org/whl/cu118
       - numpy
       - mitsuba
+      - PyYAML
       - torch
       - torchvision
       - torchaudio
+      

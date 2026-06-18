@@ -2,11 +2,11 @@
 
 This module centralizes Mitsuba setup and scene loading.
 
-It provides:
-- Mitsuba variant configuration
+It supports:
+- variant configuration
 - Windows LLVM runtime validation
-- stable scene loading from dictionaries
-- a built-in Cornell Box loader for first baselines
+- built-in Mitsuba scenes
+- XML scene files
 """
 
 from __future__ import annotations
@@ -20,7 +20,6 @@ from typing import Any
 import mitsuba as mi
 
 
-# Mitsuba exposes dynamic Python bindings. Using Any avoids false type errors.
 _mi: Any = mi
 
 DEFAULT_VARIANT = "scalar_rgb"
@@ -32,7 +31,7 @@ def configure_mitsuba(variant: str = DEFAULT_VARIANT) -> None:
 
 
 def validate_windows_llvm_runtime() -> None:
-    # On Windows, Dr.Jit needs this path to render correctly.
+    # On Windows, Dr.Jit needs the full path to LLVM-C.dll.
     if platform.system() != "Windows":
         return
 
@@ -49,6 +48,53 @@ def validate_windows_llvm_runtime() -> None:
             "DRJIT_LIBLLVM_PATH does not point to a valid file: "
             f"{llvm_path}"
         )
+
+
+def load_scene_from_config(
+    scene_config: Mapping[str, Any],
+    project_root: Path,
+    parallel: bool = False,
+    optimize: bool = False,
+) -> Any:
+    # Loads a scene using the scene section from a YAML config.
+    scene_type = _read_required_string(scene_config, "type")
+
+    if scene_type == "builtin":
+        return _load_builtin_scene(
+            scene_config=scene_config,
+            parallel=parallel,
+            optimize=optimize,
+        )
+
+    if scene_type == "xml":
+        scene_path = _resolve_project_path(
+            path_value=_read_required_string(scene_config, "path"),
+            project_root=project_root,
+        )
+
+        return load_scene_from_file(
+            scene_path=scene_path,
+            parallel=parallel,
+            optimize=optimize,
+        )
+
+    raise ValueError(f"Unsupported scene type: {scene_type}")
+
+
+def load_scene_from_file(
+    scene_path: Path,
+    parallel: bool = False,
+    optimize: bool = False,
+) -> Any:
+    # Loads a Mitsuba scene from an XML file.
+    if not scene_path.is_file():
+        raise FileNotFoundError(f"Mitsuba scene file not found: {scene_path}")
+
+    return _mi.load_file(
+        str(scene_path),
+        parallel=parallel,
+        optimize=optimize,
+    )
 
 
 def load_scene_from_dict(
@@ -74,3 +120,40 @@ def load_cornell_box_scene(
         parallel=parallel,
         optimize=optimize,
     )
+
+
+def _load_builtin_scene(
+    scene_config: Mapping[str, Any],
+    parallel: bool,
+    optimize: bool,
+) -> Any:
+    # Loads built-in scenes supported by this project.
+    scene_name = _read_required_string(scene_config, "name")
+
+    if scene_name == "cornell_box":
+        return load_cornell_box_scene(
+            parallel=parallel,
+            optimize=optimize,
+        )
+
+    raise ValueError(f"Unsupported built-in scene: {scene_name}")
+
+
+def _resolve_project_path(path_value: str, project_root: Path) -> Path:
+    # Resolves relative scene paths from the project root.
+    path = Path(path_value)
+
+    if path.is_absolute():
+        return path
+
+    return project_root / path
+
+
+def _read_required_string(config: Mapping[str, Any], key: str) -> str:
+    # Reads a required string value from a small config section.
+    value = config.get(key)
+
+    if not isinstance(value, str) or value == "":
+        raise ValueError(f"Missing or invalid string value: {key}")
+
+    return value

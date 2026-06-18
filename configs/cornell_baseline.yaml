@@ -1,0 +1,13 @@
+experiment_name: cornell_baseline
+
+mitsuba:
+  variant: scalar_rgb
+
+scene:
+  type: builtin
+  name: cornell_box
+
+render:
+  spp: 64
+  seed: 42
+  output_path: outputs/baselines/cornell_baseline.exr

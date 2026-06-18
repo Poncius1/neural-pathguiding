@@ -6,7 +6,7 @@ It provides:
 - image rendering
 - output directory creation
 - render timing
-- a small render result object
+- render result metadata
 """
 
 from __future__ import annotations
@@ -19,7 +19,6 @@ from typing import Any
 import mitsuba as mi
 
 
-# Mitsuba exposes dynamic Python bindings. Using Any avoids false type errors.
 _mi: Any = mi
 
 
@@ -27,7 +26,8 @@ _mi: Any = mi
 @dataclass(frozen=True)
 class RenderResult:
     output_path: Path  # Image file written to disk.
-    spp: int  # Samples per pixel used for the render.
+    spp: int  # Samples per pixel.
+    seed: int  # Random seed used by Mitsuba.
     elapsed_seconds: float  # Total render time in seconds.
 
 
@@ -35,6 +35,7 @@ def render_scene(
     scene: Any,
     output_path: Path,
     spp: int,
+    seed: int,
 ) -> RenderResult:
     # Renders a Mitsuba scene and writes the image to disk.
     if spp <= 0:
@@ -43,7 +44,7 @@ def render_scene(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     start_time = time.perf_counter()
-    image = _mi.render(scene, spp=spp)
+    image = _mi.render(scene, spp=spp, seed=seed)
     elapsed_seconds = time.perf_counter() - start_time
 
     _mi.Bitmap(image).write(str(output_path))
@@ -51,5 +52,6 @@ def render_scene(
     return RenderResult(
         output_path=output_path,
         spp=spp,
+        seed=seed,
         elapsed_seconds=elapsed_seconds,
     )
