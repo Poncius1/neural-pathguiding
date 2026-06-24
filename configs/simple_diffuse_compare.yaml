@@ -1,0 +1,7 @@
+experiment_name: simple_diffuse_compare
+
+comparison:
+  reference_path: outputs/ground_truth/simple_diffuse_ground_truth.exr
+  candidate_path: outputs/baselines/simple_diffuse_baseline.exr
+  output_path: outputs/metrics/simple_diffuse_baseline_vs_ground_truth.json
+  peak_value: auto

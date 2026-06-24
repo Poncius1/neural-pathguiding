@@ -1,0 +1,13 @@
+experiment_name: simple_diffuse_ground_truth
+
+mitsuba:
+  variant: scalar_rgb
+
+scene:
+  type: xml
+  path: scenes/simple_diffuse/scene.xml
+
+render:
+  spp: 512
+  seed: 42
+  output_path: outputs/ground_truth/simple_diffuse_ground_truth.exr
