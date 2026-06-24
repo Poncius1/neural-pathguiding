@@ -1,0 +1,13 @@
+experiment_name: simple_diffuse_baseline
+
+mitsuba:
+  variant: scalar_rgb
+
+scene:
+  type: xml
+  path: scenes/simple_diffuse/scene.xml
+
+render:
+  spp: 64
+  seed: 42
+  output_path: outputs/baselines/simple_diffuse_baseline.exr

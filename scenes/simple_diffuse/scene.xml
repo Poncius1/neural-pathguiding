@@ -1,0 +1,108 @@
+<scene version="3.0.0">
+    <!-- Simple path tracing baseline. -->
+    <integrator type="path">
+        <integer name="max_depth" value="6"/>
+    </integrator>
+
+    <!-- Soft environment light to keep unoccluded areas visible. -->
+    <emitter type="constant">
+        <rgb name="radiance" value="0.05, 0.05, 0.05"/>
+    </emitter>
+
+    <!-- Camera looking at the sphere inside a simple diffuse room. -->
+    <sensor type="perspective">
+        <float name="fov" value="38"/>
+
+        <transform name="to_world">
+            <lookat origin="0, 1.15, 4.5"
+                    target="0, 0.75, -0.4"
+                    up="0, 1, 0"/>
+        </transform>
+
+        <sampler type="independent">
+            <integer name="sample_count" value="64"/>
+        </sampler>
+
+        <film type="hdrfilm">
+            <integer name="width" value="512"/>
+            <integer name="height" value="512"/>
+            <rfilter type="box"/>
+        </film>
+    </sensor>
+
+    <!-- Diffuse materials. -->
+    <bsdf type="diffuse" id="matte_gray">
+        <rgb name="reflectance" value="0.72, 0.72, 0.72"/>
+    </bsdf>
+
+    <bsdf type="diffuse" id="matte_dark_gray">
+        <rgb name="reflectance" value="0.45, 0.45, 0.45"/>
+    </bsdf>
+
+    <bsdf type="diffuse" id="matte_blue">
+        <rgb name="reflectance" value="0.25, 0.38, 0.85"/>
+    </bsdf>
+
+    <!-- Large floor. -->
+    <shape type="rectangle" id="floor">
+        <transform name="to_world">
+            <rotate x="1" angle="-90"/>
+            <scale x="6.0" y="8.0" z="1.0"/>
+        </transform>
+
+        <ref id="matte_gray"/>
+    </shape>
+
+    <!-- Back wall. -->
+    <shape type="rectangle" id="back_wall">
+        <transform name="to_world">
+            <translate z="-2.5"/>
+            <scale x="6.0" y="2.8" z="1.0"/>
+        </transform>
+
+        <ref id="matte_dark_gray"/>
+    </shape>
+
+    <!-- Left wall. -->
+    <shape type="rectangle" id="left_wall">
+        <transform name="to_world">
+            <translate x="-3.0" y="1.4" z="0.0"/>
+            <rotate y="1" angle="90"/>
+            <scale x="4.5" y="2.8" z="1.0"/>
+        </transform>
+
+        <ref id="matte_gray"/>
+    </shape>
+
+    <!-- Right wall. -->
+    <shape type="rectangle" id="right_wall">
+        <transform name="to_world">
+            <translate x="3.0" y="1.4" z="0.0"/>
+            <rotate y="1" angle="-90"/>
+            <scale x="4.5" y="2.8" z="1.0"/>
+        </transform>
+
+        <ref id="matte_gray"/>
+    </shape>
+
+    <!-- Main diffuse object. -->
+    <shape type="sphere" id="center_sphere">
+        <point name="center" value="0, 0.55, 0"/>
+        <float name="radius" value="0.55"/>
+
+        <ref id="matte_blue"/>
+    </shape>
+
+    <!-- Area light above the scene, facing downward. -->
+    <shape type="rectangle" id="ceiling_light">
+        <transform name="to_world">
+            <translate x="0" y="2.5" z="0.2"/>
+            <rotate x="1" angle="90"/>
+            <scale x="1.2" y="1.2" z="1.0"/>
+        </transform>
+
+        <emitter type="area">
+            <rgb name="radiance" value="35, 35, 35"/>
+        </emitter>
+    </shape>
+</scene>
