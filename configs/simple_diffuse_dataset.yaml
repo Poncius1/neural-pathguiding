@@ -1,0 +1,36 @@
+experiment_name: simple_diffuse_dataset_v0
+
+mitsuba:
+  variant: scalar_rgb
+
+scene:
+  type: xml
+  path: scenes/simple_diffuse/scene.xml
+
+camera:
+  origin: [0.0, 1.15, 4.5]
+  target: [0.0, 0.75, -0.4]
+  up: [0.0, 1.0, 0.0]
+  fov_degrees: 38.0
+  image_width: 512
+  image_height: 512
+
+bins:
+  n_mu: 4
+  n_phi: 8
+
+dataset:
+  num_shading_points: 256
+  max_sampling_attempts: 10000
+  seed: 42
+  output_path: data/simple_diffuse_dataset_v0.npz
+
+teacher:
+  target_type: visibility_cosine_v0
+  samples_per_bin: 4
+  smoothing: 0.000001
+  ray_epsilon: 0.0001
+  max_distance: 1000.0
+  environment_weight: 1.0
+  emitter_weight: 8.0
+  occluded_weight: 0.02
