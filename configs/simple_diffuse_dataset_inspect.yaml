@@ -1,0 +1,7 @@
+experiment_name: inspect_simple_diffuse_dataset_v0
+
+dataset:
+  path: data/simple_diffuse_dataset_v0.npz
+
+inspection:
+  top_k_bins: 8
