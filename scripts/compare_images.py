@@ -1,6 +1,4 @@
 """Compare two rendered images using a YAML config.
-
-This script is intentionally thin.
 Metric logic lives in src/neural_path_guiding/evaluation/.
 """
 

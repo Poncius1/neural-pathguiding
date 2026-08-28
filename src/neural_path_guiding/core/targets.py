@@ -10,6 +10,7 @@ from __future__ import annotations
 import numpy as np
 
 from neural_path_guiding.core.features import FloatArray
+from neural_path_guiding.core.pdf import normalize_probabilities
 
 
 def contributions_to_target_distribution(
@@ -17,6 +18,9 @@ def contributions_to_target_distribution(
     smoothing: float,
 ) -> FloatArray:
     # Converts non-negative per-bin contributions into a probability distribution.
+    if not np.isfinite(smoothing):
+        raise ValueError("smoothing must be finite.")
+
     if smoothing < 0.0:
         raise ValueError("smoothing must be non-negative.")
 
@@ -34,10 +38,16 @@ def contributions_to_target_distribution(
     if bool(np.any(values < 0.0)):
         raise ValueError("contributions must be non-negative.")
 
-    smoothed = values + smoothing
-    total = float(smoothed.sum())
+    if not bool(np.any(values > 0.0)) and smoothing == 0.0:
+        raise ValueError(
+            "contributions must contain a positive value when smoothing is zero."
+        )
 
-    if total <= 0.0:
-        return np.full(values.shape, 1.0 / values.size, dtype=np.float64)
+    # Scale both terms before adding so finite values cannot overflow.
+    scale = max(float(values.max()), float(smoothing))
+    scaled_smoothed = values / scale + smoothing / scale
 
-    return smoothed / total
+    return normalize_probabilities(
+        probabilities=scaled_smoothed,
+        expected_size=values.size,
+    )

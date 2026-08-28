@@ -43,6 +43,50 @@ class TestPdfUtilities(unittest.TestCase):
 
         self.assert_close(float(normalized.sum()), 1.0)
 
+    def test_normalize_probabilities_rejects_non_finite_values(self) -> None:
+        invalid_values = [
+            np.array([1.0, np.nan]),
+            np.array([1.0, np.inf]),
+            np.array([1.0, -np.inf]),
+        ]
+
+        for probabilities in invalid_values:
+            with self.subTest(probabilities=probabilities):
+                with self.assertRaises(ValueError):
+                    normalize_probabilities(probabilities, expected_size=2)
+
+    def test_normalize_probabilities_rejects_negative_values(self) -> None:
+        with self.assertRaises(ValueError):
+            normalize_probabilities(np.array([1.0, -0.1]), expected_size=2)
+
+    def test_normalize_probabilities_rejects_zero_sum(self) -> None:
+        with self.assertRaises(ValueError):
+            normalize_probabilities(np.zeros(2), expected_size=2)
+
+    def test_normalize_probabilities_rejects_empty_vector(self) -> None:
+        with self.assertRaises(ValueError):
+            normalize_probabilities(np.array([]), expected_size=0)
+
+    def test_normalize_probabilities_avoids_sum_overflow(self) -> None:
+        probabilities = np.array([np.finfo(np.float64).max] * 2)
+
+        normalized = normalize_probabilities(probabilities, expected_size=2)
+
+        self.assertTrue(bool(np.all(np.isfinite(normalized))))
+        self.assertTrue(bool(np.allclose(normalized, np.array([0.5, 0.5]))))
+
+    def test_mix_with_uniform_rejects_non_finite_alpha(self) -> None:
+        probabilities = np.ones(self.bins.n_bins)
+
+        for alpha in (np.nan, np.inf, -np.inf):
+            with self.subTest(alpha=alpha):
+                with self.assertRaises(ValueError):
+                    mix_with_uniform(
+                        probabilities=probabilities,
+                        alpha=alpha,
+                        expected_size=self.bins.n_bins,
+                    )
+
     def test_uniform_probabilities_produce_uniform_pdf(self) -> None:
         probabilities = np.full(self.bins.n_bins, 1.0 / self.bins.n_bins)
 

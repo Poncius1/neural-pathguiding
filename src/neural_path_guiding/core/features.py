@@ -53,13 +53,25 @@ class ShadingFeatures:
         outgoing = normalize_vector3(self.outgoing_direction, "outgoing_direction")
         albedo = validate_vector3(self.albedo, "albedo")
 
-        if self.roughness < 0.0:
-            raise ValueError("roughness must be non-negative.")
+        if not np.isfinite(self.roughness):
+            raise ValueError("roughness must be finite.")
+
+        if not 0.0 <= self.roughness <= 1.0:
+            raise ValueError("roughness must be in [0, 1].")
+
+        if bool(np.any((albedo < 0.0) | (albedo > 1.0))):
+            raise ValueError("albedo components must be in [0, 1].")
+
+        if isinstance(self.bounce_depth, bool) or not isinstance(
+            self.bounce_depth,
+            (int, np.integer),
+        ):
+            raise TypeError("bounce_depth must be an integer.")
 
         if self.bounce_depth < 0:
             raise ValueError("bounce_depth must be non-negative.")
 
-        return np.array(
+        feature_vector = np.array(
             [
                 position[0],
                 position[1],
@@ -78,6 +90,8 @@ class ShadingFeatures:
             ],
             dtype=np.float64,
         )
+
+        return validate_feature_vector(feature_vector)
 
 
 def validate_feature_vector(features: FloatArray) -> FloatArray:

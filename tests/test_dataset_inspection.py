@@ -60,13 +60,26 @@ class TestDatasetInspection(unittest.TestCase):
         with self.assertRaises(ValueError):
             inspect_dataset_arrays(features=features, targets=targets)
 
-    def test_non_normalized_targets_create_warning(self) -> None:
+    def test_non_normalized_targets_are_rejected(self) -> None:
         features = np.ones((1, 14), dtype=np.float32)
         targets = np.array([[0.5, 0.5, 0.5]], dtype=np.float32)
 
-        report = inspect_dataset_arrays(features=features, targets=targets)
+        with self.assertRaises(ValueError):
+            inspect_dataset_arrays(features=features, targets=targets)
 
-        self.assertEqual(len(report["warnings"]), 1)
+    def test_zero_sum_targets_are_rejected(self) -> None:
+        features = np.ones((1, 14), dtype=np.float32)
+        targets = np.zeros((1, 4), dtype=np.float32)
+
+        with self.assertRaises(ValueError):
+            inspect_dataset_arrays(features=features, targets=targets)
+
+    def test_wrong_feature_dimension_is_rejected(self) -> None:
+        features = np.ones((1, 13), dtype=np.float32)
+        targets = np.ones((1, 4), dtype=np.float32) / 4.0
+
+        with self.assertRaises(ValueError):
+            inspect_dataset_arrays(features=features, targets=targets)
 
 
 if __name__ == "__main__":

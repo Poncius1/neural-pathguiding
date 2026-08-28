@@ -137,6 +137,11 @@ def _validate_dataset(features: Array, targets: Array) -> None:
         (targets.ndim == 2, f"targets must be 2D, got {targets.shape}."),
         (features.shape[0] == targets.shape[0], "features and targets sample counts differ."),
         (features.shape[0] > 0, "dataset must contain at least one sample."),
+        (
+            features.ndim != 2 or features.shape[1] == FEATURE_DIMENSION,
+            f"features must have dimension {FEATURE_DIMENSION}.",
+        ),
+        (targets.ndim != 2 or targets.shape[1] > 0, "targets must contain at least one bin."),
         (np.all(np.isfinite(features)), "features contains non-finite values."),
         (np.all(np.isfinite(targets)), "targets contains non-finite values."),
         (not np.any(targets < 0.0), "targets must be non-negative."),
@@ -146,19 +151,14 @@ def _validate_dataset(features: Array, targets: Array) -> None:
         if not bool(condition):
             raise ValueError(message)
 
+    target_sums = targets.sum(axis=1, dtype=np.float64)
+    if not bool(np.allclose(target_sums, 1.0, atol=1e-4, rtol=0.0)):
+        raise ValueError("every target row must sum to 1.")
+
 
 def _build_warnings(features: Array, targets: Array) -> list[str]:
     # Non-fatal issues that are useful to know before training.
     warnings: list[str] = []
-
-    if features.shape[1] != FEATURE_DIMENSION:
-        warnings.append(
-            f"Expected feature dimension {FEATURE_DIMENSION}, got {features.shape[1]}."
-        )
-
-    target_sums = targets.sum(axis=1, dtype=np.float64)
-    if not np.allclose(target_sums, 1.0, atol=1e-4, rtol=0.0):
-        warnings.append("Some target rows do not sum to 1.")
 
     return warnings
 
