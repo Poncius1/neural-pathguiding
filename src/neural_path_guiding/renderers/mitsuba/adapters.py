@@ -51,8 +51,19 @@ def normalize_numpy_vector(vector: FloatArray) -> FloatArray:
     # Normalizes a NumPy 3D vector.
     vector = np.asarray(vector, dtype=np.float64)
 
-    norm = float(np.linalg.norm(vector))
+    if vector.shape != (3,):
+        raise ValueError(f"vector must have shape (3,), got {vector.shape}.")
+
+    if not bool(np.all(np.isfinite(vector))):
+        raise ValueError("vector must contain only finite values.")
+
+    scale = float(np.max(np.abs(vector)))
+    if scale <= 0.0:
+        raise ValueError("Cannot normalize a zero vector.")
+
+    scaled_vector = vector / scale
+    norm = float(np.linalg.norm(scaled_vector))
     if norm <= 0.0:
         raise ValueError("Cannot normalize a zero vector.")
 
-    return vector / norm
+    return scaled_vector / norm

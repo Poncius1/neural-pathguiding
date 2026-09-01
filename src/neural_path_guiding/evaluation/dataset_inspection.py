@@ -14,7 +14,8 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from neural_path_guiding.core.features import FEATURE_DIMENSION
+from neural_path_guiding.data.dataset import load_dataset
+from neural_path_guiding.data.validation import validate_training_arrays
 
 
 Array = NDArray[Any]
@@ -23,18 +24,12 @@ Report = dict[str, Any]
 
 def inspect_dataset_file(dataset_path: Path, top_k_bins: int = 8) -> Report:
     # Loads a dataset from disk and builds an inspection report.
-    if not dataset_path.is_file():
-        raise FileNotFoundError(f"Dataset file not found: {dataset_path}")
-
-    with np.load(dataset_path, allow_pickle=False) as dataset:
-        features = _read_required_array(dataset, "features")
-        targets = _read_required_array(dataset, "targets")
-        metadata = _read_metadata(dataset)
+    dataset = load_dataset(dataset_path)
 
     return inspect_dataset_arrays(
-        features=features,
-        targets=targets,
-        metadata=metadata,
+        features=dataset.features,
+        targets=dataset.targets,
+        metadata=dataset.metadata,
         dataset_path=dataset_path,
         top_k_bins=top_k_bins,
     )
@@ -51,7 +46,7 @@ def inspect_dataset_arrays(
     features = np.asarray(features)
     targets = np.asarray(targets)
 
-    _validate_dataset(features, targets)
+    validate_training_arrays(features, targets)
 
     target_sums = targets.sum(axis=1, dtype=np.float64)
     target_entropy = compute_target_entropy(targets)
@@ -76,7 +71,7 @@ def inspect_dataset_arrays(
         "max_probability_stats": _stats(max_target_probability),
         "top_average_bins": top_bins,
         "metadata": metadata or {},
-        "warnings": _build_warnings(features, targets),
+        "warnings": [],
     }
 
 
@@ -128,61 +123,6 @@ def format_inspection_report(report: Report) -> str:
         lines.extend(["", "Metadata", json.dumps(report["metadata"], indent=2)])
 
     return "\n".join(lines)
-
-
-def _validate_dataset(features: Array, targets: Array) -> None:
-    # Fatal validation: if this fails, the dataset is not safe to use.
-    checks = [
-        (features.ndim == 2, f"features must be 2D, got {features.shape}."),
-        (targets.ndim == 2, f"targets must be 2D, got {targets.shape}."),
-        (features.shape[0] == targets.shape[0], "features and targets sample counts differ."),
-        (features.shape[0] > 0, "dataset must contain at least one sample."),
-        (
-            features.ndim != 2 or features.shape[1] == FEATURE_DIMENSION,
-            f"features must have dimension {FEATURE_DIMENSION}.",
-        ),
-        (targets.ndim != 2 or targets.shape[1] > 0, "targets must contain at least one bin."),
-        (np.all(np.isfinite(features)), "features contains non-finite values."),
-        (np.all(np.isfinite(targets)), "targets contains non-finite values."),
-        (not np.any(targets < 0.0), "targets must be non-negative."),
-    ]
-
-    for condition, message in checks:
-        if not bool(condition):
-            raise ValueError(message)
-
-    target_sums = targets.sum(axis=1, dtype=np.float64)
-    if not bool(np.allclose(target_sums, 1.0, atol=1e-4, rtol=0.0)):
-        raise ValueError("every target row must sum to 1.")
-
-
-def _build_warnings(features: Array, targets: Array) -> list[str]:
-    # Non-fatal issues that are useful to know before training.
-    warnings: list[str] = []
-
-    return warnings
-
-
-def _read_required_array(dataset: Any, name: str) -> Array:
-    # Reads a required NPZ array.
-    if name not in dataset.files:
-        raise ValueError(f"Dataset is missing required array: {name}")
-
-    return np.array(dataset[name], copy=True)
-
-
-def _read_metadata(dataset: Any) -> dict[str, Any]:
-    # Reads optional JSON metadata from the NPZ file.
-    if "metadata_json" not in dataset.files:
-        return {}
-
-    try:
-        raw = dataset["metadata_json"].item()
-        metadata = json.loads(str(raw))
-    except (ValueError, TypeError, json.JSONDecodeError):
-        return {}
-
-    return metadata if isinstance(metadata, dict) else {}
 
 
 def _stats(values: Array) -> dict[str, float]:
