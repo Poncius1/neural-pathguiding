@@ -16,7 +16,7 @@ from numpy.typing import NDArray
 FloatArray = NDArray[np.float64]
 
 FEATURE_DIMENSION = 14
-
+FEATURE_SCHEMA_VERSION = 1
 
 FEATURE_NAMES = (
     "position_x",

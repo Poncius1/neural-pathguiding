@@ -30,14 +30,20 @@ class TrainingSubset:
     feature_mean: torch.Tensor
     feature_scale: torch.Tensor
     indices: IndexArray
+    n_mu: int
+    n_phi: int
+    target_type: str
+    dataset_format_version: int
 
     @property
     def num_samples(self) -> int:
-        return int(self.features.shape[0])
+     return int(self.features.shape[0])
+
 
     @property
     def feature_dimension(self) -> int:
         return int(self.features.shape[1])
+
 
     @property
     def num_bins(self) -> int:
@@ -105,12 +111,18 @@ def load_training_subset(
     ) / feature_scale
 
     return TrainingSubset(
-        features=normalized_features,
-        targets=targets,
-        feature_mean=feature_mean,
-        feature_scale=feature_scale,
-        indices=indices,
-    )
+    features=normalized_features,
+    targets=targets,
+    feature_mean=feature_mean,
+    feature_scale=feature_scale,
+    indices=indices,
+    n_mu=int(dataset.metadata["n_mu"]),
+    n_phi=int(dataset.metadata["n_phi"]),
+    target_type=str(dataset.metadata["target_type"]),
+    dataset_format_version=int(
+        dataset.metadata["dataset_format_version"]
+    ),
+)
 
 
 def _validate_subset_settings(

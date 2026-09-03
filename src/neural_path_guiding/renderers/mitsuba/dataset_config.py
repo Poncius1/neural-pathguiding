@@ -21,6 +21,8 @@ from neural_path_guiding.renderers.mitsuba.dataset_generator import (
     DatasetCamera,
     DatasetGenerationSettings,
     DatasetProvenance,
+)
+from neural_path_guiding.renderers.mitsuba.teachers import (
     VisibilityCosineTeacherSettings,
     validate_teacher_target_type,
 )

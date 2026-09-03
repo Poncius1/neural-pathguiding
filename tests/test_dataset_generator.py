@@ -31,18 +31,20 @@ except ModuleNotFoundError:
 
 
 from neural_path_guiding.core.bins import HemisphereBins
+from neural_path_guiding.data.schema import DATASET_FORMAT_VERSION
 from neural_path_guiding.renderers.mitsuba.dataset_generator import (
-    DATASET_FORMAT_VERSION,
-    VISIBILITY_COSINE_TARGET,
     DatasetCamera,
     DatasetGenerationSettings,
     DatasetProvenance,
-    VisibilityCosineTeacherSettings,
     build_metadata,
+    validate_dataset_settings,
+)
+from neural_path_guiding.renderers.mitsuba.teachers import (
+    VISIBILITY_COSINE_TARGET,
+    VisibilityCosineTeacherSettings,
     estimate_visibility_cosine_contribution,
     resolve_teacher_estimator,
     surface_hit_has_emitter,
-    validate_dataset_settings,
     validate_teacher_target_type,
 )
 

@@ -118,6 +118,14 @@ class TestTrainingDataset(unittest.TestCase):
         self.assertEqual(subset.num_samples, 4)
         self.assertEqual(subset.feature_dimension, 14)
         self.assertEqual(subset.num_bins, 8)
+        self.assertGreater(subset.n_mu, 0)
+        self.assertGreater(subset.n_phi, 0)
+        self.assertEqual(
+            subset.n_mu * subset.n_phi,
+            subset.num_bins,
+        )
+        self.assertTrue(subset.target_type)
+        self.assertEqual(subset.dataset_format_version, 1)
 
         feature_means = subset.features.mean(dim=0)
 
