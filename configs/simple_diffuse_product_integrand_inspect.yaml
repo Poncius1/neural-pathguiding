@@ -1,0 +1,7 @@
+experiment_name: inspect_simple_diffuse_product_integrand_smoke_v1
+
+dataset:
+  path: data/simple_diffuse_product_integrand_smoke_v1.npz
+
+inspection:
+  top_k_bins: 8

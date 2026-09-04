@@ -1,14 +1,15 @@
 """Mitsuba dataset generation utilities.
 
-This module:
+This module is responsible for orchestrating dataset generation:
 
-- samples visible shading points using camera rays
-- extracts feature vectors from Mitsuba surface interactions
-- requests directional contributions from a teacher
-- converts contributions into target distributions
-- saves validated datasets as compressed NPZ files
+- sample visible shading points using camera rays
+- extract neural-guiding features
+- delegate directional contribution estimation to a teacher
+- construct normalized target distributions
+- save arrays and reproducibility metadata
 
-Teacher implementations live in renderers.mitsuba.teachers.
+The physical meaning of each target is implemented in teachers.py.
+This module should not contain teacher-specific estimation logic.
 """
 
 from __future__ import annotations
@@ -20,13 +21,17 @@ import json
 import math
 from pathlib import Path
 import platform
-from typing import Any
+from typing import Any, cast
 
 import mitsuba as mi
 import numpy as np
 
 from neural_path_guiding.core.bins import HemisphereBins
-from neural_path_guiding.core.features import FEATURE_DIMENSION, FloatArray
+from neural_path_guiding.core.features import (
+    FEATURE_DIMENSION,
+    FEATURE_SCHEMA_VERSION,
+    FloatArray,
+)
 from neural_path_guiding.core.targets import (
     contributions_to_target_distribution,
 )
@@ -41,18 +46,20 @@ from neural_path_guiding.renderers.mitsuba.adapters import (
 )
 from neural_path_guiding.renderers.mitsuba.teachers import (
     TeacherContext,
-    VisibilityCosineTeacherSettings,
+    TeacherSettings,
+    build_teacher_metadata,
+    create_teacher_runtime,
     estimate_bin_contributions,
+    validate_teacher_settings,
     validate_teacher_target_type,
 )
-
 
 _mi: Any = mi
 
 
 @dataclass(frozen=True)
 class DatasetCamera:
-    """Simple pinhole camera used to sample visible points."""
+    """Simple pinhole camera used to collect visible shading points."""
 
     origin: FloatArray
     target: FloatArray
@@ -64,7 +71,7 @@ class DatasetCamera:
 
 @dataclass(frozen=True)
 class DatasetProvenance:
-    """Source information needed to reproduce a dataset."""
+    """Source information required to reproduce a generated dataset."""
 
     project_root: Path
     config_path: Path
@@ -80,7 +87,7 @@ class DatasetGenerationSettings:
     scene: Any
     camera: DatasetCamera
     bins: HemisphereBins
-    teacher: VisibilityCosineTeacherSettings
+    teacher: TeacherSettings
     num_shading_points: int
     max_sampling_attempts: int
     seed: int
@@ -91,7 +98,7 @@ class DatasetGenerationSettings:
 
 @dataclass(frozen=True)
 class DatasetGenerationResult:
-    """Summary returned after generating a dataset."""
+    """Small summary returned after dataset generation."""
 
     output_path: Path
     num_samples: int
@@ -102,11 +109,14 @@ class DatasetGenerationResult:
 def generate_dataset(
     settings: DatasetGenerationSettings,
 ) -> DatasetGenerationResult:
-    """Generate, validate, and save one directional dataset."""
-
+    """Generate and save one neural-guiding dataset."""
     validate_dataset_settings(settings)
 
     rng = np.random.default_rng(settings.seed)
+    teacher_runtime = create_teacher_runtime(
+    teacher=settings.teacher,
+    seed=settings.seed,
+)
 
     features_list: list[FloatArray] = []
     targets_list: list[FloatArray] = []
@@ -160,6 +170,7 @@ def generate_dataset(
             bins=settings.bins,
             teacher=settings.teacher,
             rng=rng,
+            runtime=teacher_runtime,
         )
 
         target_distribution = contributions_to_target_distribution(
@@ -174,30 +185,15 @@ def generate_dataset(
         normal_list.append(shading_features.normal)
         pixel_list.append((pixel_x, pixel_y))
 
-    features = np.asarray(
-        features_list,
-        dtype=np.float32,
-    )
-    targets = np.asarray(
-        targets_list,
-        dtype=np.float32,
-    )
+    features = np.asarray(features_list, dtype=np.float32)
+    targets = np.asarray(targets_list, dtype=np.float32)
     mean_contributions = np.asarray(
         mean_contribution_list,
         dtype=np.float32,
     )
-    positions = np.asarray(
-        position_list,
-        dtype=np.float32,
-    )
-    normals = np.asarray(
-        normal_list,
-        dtype=np.float32,
-    )
-    pixels = np.asarray(
-        pixel_list,
-        dtype=np.int32,
-    )
+    positions = np.asarray(position_list, dtype=np.float32)
+    normals = np.asarray(normal_list, dtype=np.float32)
+    pixels = np.asarray(pixel_list, dtype=np.int32)
 
     metadata = build_metadata(settings)
 
@@ -211,10 +207,7 @@ def generate_dataset(
         metadata=metadata,
     )
 
-    save_dataset(
-        settings.output_path,
-        dataset,
-    )
+    save_dataset(settings.output_path, dataset)
 
     return DatasetGenerationResult(
         output_path=settings.output_path,
@@ -228,24 +221,14 @@ def sample_camera_ray(
     camera: DatasetCamera,
     rng: np.random.Generator,
 ) -> tuple[int, int, Any]:
-    """Sample one pixel and construct its camera ray."""
-
-    pixel_x = int(
-        rng.integers(
-            0,
-            camera.image_width,
-        )
-    )
-    pixel_y = int(
-        rng.integers(
-            0,
-            camera.image_height,
-        )
-    )
+    """Sample one image position and construct its camera ray."""
+    pixel_x = int(rng.integers(0, camera.image_width))
+    pixel_y = int(rng.integers(0, camera.image_height))
 
     u = (
         pixel_x + float(rng.random())
     ) / camera.image_width
+
     v = (
         pixel_y + float(rng.random())
     ) / camera.image_height
@@ -269,28 +252,23 @@ def compute_pinhole_camera_direction(
     u: float,
     v: float,
 ) -> FloatArray:
-    """Convert normalized image coordinates into a ray direction."""
-
+    """Convert normalized image coordinates into a world direction."""
     forward = normalize_numpy_vector(
         camera.target - camera.origin
     )
+
     right = normalize_numpy_vector(
-        np.cross(
-            forward,
-            camera.up,
-        )
+        np.cross(forward, camera.up)
     )
+
     true_up = normalize_numpy_vector(
-        np.cross(
-            right,
-            forward,
-        )
+        np.cross(right, forward)
     )
 
     aspect_ratio = (
-        camera.image_width
-        / camera.image_height
+        camera.image_width / camera.image_height
     )
+
     fov_scale = math.tan(
         math.radians(camera.fov_degrees) * 0.5
     )
@@ -300,6 +278,7 @@ def compute_pinhole_camera_direction(
         * aspect_ratio
         * fov_scale
     )
+
     screen_y = (
         (1.0 - 2.0 * v)
         * fov_scale
@@ -317,12 +296,12 @@ def compute_pinhole_camera_direction(
 def build_metadata(
     settings: DatasetGenerationSettings,
 ) -> dict[str, Any]:
-    """Build the metadata required to reproduce the dataset."""
-
+    """Build reproducibility metadata for a generated dataset."""
     provenance = settings.provenance
 
     return {
         "dataset_format_version": DATASET_FORMAT_VERSION,
+        "feature_schema_version": FEATURE_SCHEMA_VERSION,
         "experiment_name": settings.experiment_name,
         "target_type": settings.teacher.target_type,
         "feature_dimension": FEATURE_DIMENSION,
@@ -348,22 +327,14 @@ def build_metadata(
                 provenance.config_snapshot
             ),
         },
-        "scene": _build_scene_metadata(
-            provenance
-        ),
+        "scene": _build_scene_metadata(provenance),
         "software": {
             "python": platform.python_version(),
             "numpy": np.__version__,
             "mitsuba": str(
-                getattr(
-                    _mi,
-                    "__version__",
-                    "unknown",
-                )
+                getattr(_mi, "__version__", "unknown")
             ),
-            "mitsuba_variant": (
-                provenance.mitsuba_variant
-            ),
+            "mitsuba_variant": provenance.mitsuba_variant,
             "platform": platform.platform(),
         },
         "array_schema": {
@@ -392,21 +363,9 @@ def build_metadata(
                 2,
             ],
         },
-        "teacher": {
-            "smoothing": settings.teacher.smoothing,
-            "max_distance": (
-                settings.teacher.max_distance
-            ),
-            "environment_weight": (
-                settings.teacher.environment_weight
-            ),
-            "emitter_weight": (
-                settings.teacher.emitter_weight
-            ),
-            "occluded_weight": (
-                settings.teacher.occluded_weight
-            ),
-        },
+        "teacher": build_teacher_metadata(
+            settings.teacher
+        ),
         "camera": {
             "origin": settings.camera.origin.tolist(),
             "target": settings.camera.target.tolist(),
@@ -424,142 +383,18 @@ def build_metadata(
     }
 
 
-def _build_scene_metadata(
-    provenance: DatasetProvenance,
-) -> dict[str, Any]:
-    """Build metadata for an XML or built-in scene."""
-
-    scene_type = provenance.scene_config.get("type")
-
-    if scene_type == "xml":
-        path_value = provenance.scene_config.get(
-            "path"
-        )
-
-        if (
-            not isinstance(path_value, str)
-            or path_value.strip() == ""
-        ):
-            raise ValueError(
-                "XML scene config requires a non-empty path."
-            )
-
-        scene_path = Path(path_value)
-
-        if not scene_path.is_absolute():
-            scene_path = (
-                provenance.project_root
-                / scene_path
-            )
-
-        if not scene_path.is_file():
-            raise FileNotFoundError(
-                "Mitsuba scene file not found: "
-                f"{scene_path}"
-            )
-
-        return {
-            "type": "xml",
-            "path": _display_path(
-                scene_path,
-                provenance.project_root,
-            ),
-            "sha256": _sha256_file(
-                scene_path
-            ),
-        }
-
-    if scene_type == "builtin":
-        scene_name = provenance.scene_config.get(
-            "name"
-        )
-
-        if (
-            not isinstance(scene_name, str)
-            or scene_name.strip() == ""
-        ):
-            raise ValueError(
-                "Built-in scene config requires "
-                "a non-empty name."
-            )
-
-        return {
-            "type": "builtin",
-            "name": scene_name,
-            "sha256": None,
-        }
-
-    raise ValueError(
-        "Unsupported scene type in provenance: "
-        f"{scene_type}"
-    )
-
-
-def _sha256_file(path: Path) -> str:
-    """Calculate a SHA-256 digest."""
-
-    digest = hashlib.sha256()
-
-    with path.open("rb") as file:
-        for chunk in iter(
-            lambda: file.read(1024 * 1024),
-            b"",
-        ):
-            digest.update(chunk)
-
-    return digest.hexdigest()
-
-
-def _display_path(
-    path: Path,
-    project_root: Path,
-) -> str:
-    """Prefer a project-relative path when possible."""
-
-    resolved_path = path.resolve()
-    resolved_root = project_root.resolve()
-
-    try:
-        return str(
-            resolved_path.relative_to(
-                resolved_root
-            )
-        )
-    except ValueError:
-        return str(resolved_path)
-
-
-def mitsuba_vector_to_numpy(
-    vector: Any,
-) -> FloatArray:
-    """Convert a Mitsuba point or vector into NumPy."""
-
-    return np.array(
-        [
-            float(vector[0]),
-            float(vector[1]),
-            float(vector[2]),
-        ],
-        dtype=np.float64,
-    )
-
-
 def validate_dataset_settings(
     settings: DatasetGenerationSettings,
 ) -> None:
-    """Validate settings before expensive rendering work."""
-
+    """Validate settings before performing expensive Mitsuba work."""
     _validate_positive_integer(
         settings.num_shading_points,
         "num_shading_points",
     )
+
     _validate_positive_integer(
         settings.max_sampling_attempts,
         "max_sampling_attempts",
-    )
-    _validate_positive_integer(
-        settings.teacher.samples_per_bin,
-        "samples_per_bin",
     )
 
     if (
@@ -578,48 +413,34 @@ def validate_dataset_settings(
             (int, np.integer),
         )
     ):
-        raise TypeError(
-            "seed must be an integer."
-        )
+        raise TypeError("seed must be an integer.")
 
     if settings.seed < 0:
         raise ValueError(
             "seed must be non-negative."
         )
 
+    # Validate the parameters belonging to the selected
+    # teacher implementation.
+    validate_teacher_settings(settings.teacher)
+
+    # A target may be defined in the research roadmap while
+    # its estimator is not implemented yet. Only implemented
+    # targets are allowed to generate datasets.
     validate_teacher_target_type(
         settings.teacher.target_type
-    )
-
-    _validate_finite_non_negative(
-        settings.teacher.smoothing,
-        "smoothing",
-    )
-    _validate_finite_positive(
-        settings.teacher.max_distance,
-        "max_distance",
-    )
-    _validate_finite_non_negative(
-        settings.teacher.environment_weight,
-        "environment_weight",
-    )
-    _validate_finite_non_negative(
-        settings.teacher.emitter_weight,
-        "emitter_weight",
-    )
-    _validate_finite_non_negative(
-        settings.teacher.occluded_weight,
-        "occluded_weight",
     )
 
     _validate_positive_integer(
         settings.camera.image_width,
         "image_width",
     )
+
     _validate_positive_integer(
         settings.camera.image_height,
         "image_height",
     )
+
     _validate_finite_positive(
         settings.camera.fov_degrees,
         "fov_degrees",
@@ -634,10 +455,12 @@ def validate_dataset_settings(
         settings.camera.origin,
         "camera.origin",
     )
+
     target = _validate_vector3(
         settings.camera.target,
         "camera.target",
     )
+
     up = _validate_vector3(
         settings.camera.up,
         "camera.up",
@@ -646,18 +469,17 @@ def validate_dataset_settings(
     forward = normalize_numpy_vector(
         target - origin
     )
+
     normalized_up = normalize_numpy_vector(up)
 
-    cross_length = float(
-        np.linalg.norm(
-            np.cross(
-                forward,
-                normalized_up,
+    if (
+        float(
+            np.linalg.norm(
+                np.cross(forward, normalized_up)
             )
         )
-    )
-
-    if cross_length <= 1e-12:
+        <= 1e-12
+    ):
         raise ValueError(
             "camera.up must not be parallel "
             "to the viewing direction."
@@ -669,10 +491,7 @@ def validate_dataset_settings(
         )
 
     if (
-        not isinstance(
-            settings.experiment_name,
-            str,
-        )
+        not isinstance(settings.experiment_name, str)
         or settings.experiment_name.strip() == ""
     ):
         raise ValueError(
@@ -700,10 +519,7 @@ def validate_dataset_settings(
         )
 
     if (
-        not isinstance(
-            provenance.mitsuba_variant,
-            str,
-        )
+        not isinstance(provenance.mitsuba_variant, str)
         or provenance.mitsuba_variant.strip() == ""
     ):
         raise ValueError(
@@ -713,25 +529,128 @@ def validate_dataset_settings(
 
     try:
         json.dumps(
-            dict(
-                provenance.config_snapshot
-            )
+            dict(provenance.config_snapshot)
         )
     except (TypeError, ValueError) as error:
         raise ValueError(
-            "config_snapshot must be "
-            "JSON serializable."
+            "config_snapshot must be JSON serializable."
         ) from error
 
     _build_scene_metadata(provenance)
+
+
+def _build_scene_metadata(
+    provenance: DatasetProvenance,
+) -> dict[str, Any]:
+    """Build metadata for XML or built-in scenes."""
+    scene_type = provenance.scene_config.get("type")
+
+    if scene_type == "xml":
+        path_value = provenance.scene_config.get("path")
+
+        if (
+            not isinstance(path_value, str)
+            or path_value.strip() == ""
+        ):
+            raise ValueError(
+                "XML scene config requires "
+                "a non-empty path."
+            )
+
+        scene_path = Path(path_value)
+
+        if not scene_path.is_absolute():
+            scene_path = (
+                provenance.project_root / scene_path
+            )
+
+        if not scene_path.is_file():
+            raise FileNotFoundError(
+                "Mitsuba scene file not found: "
+                f"{scene_path}"
+            )
+
+        return {
+            "type": "xml",
+            "path": _display_path(
+                scene_path,
+                provenance.project_root,
+            ),
+            "sha256": _sha256_file(scene_path),
+        }
+
+    if scene_type == "builtin":
+        scene_name = provenance.scene_config.get("name")
+
+        if (
+            not isinstance(scene_name, str)
+            or scene_name.strip() == ""
+        ):
+            raise ValueError(
+                "Built-in scene config requires "
+                "a non-empty name."
+            )
+
+        return {
+            "type": "builtin",
+            "name": scene_name,
+            "sha256": None,
+        }
+
+    raise ValueError(
+        "Unsupported scene type in provenance: "
+        f"{scene_type}"
+    )
+
+
+def _sha256_file(path: Path) -> str:
+    """Return the SHA-256 digest of a file."""
+    digest = hashlib.sha256()
+
+    with path.open("rb") as file:
+        for chunk in iter(
+            lambda: file.read(1024 * 1024),
+            b"",
+        ):
+            digest.update(chunk)
+
+    return digest.hexdigest()
+
+
+def _display_path(
+    path: Path,
+    project_root: Path,
+) -> str:
+    """Prefer project-relative paths in metadata."""
+    resolved_path = path.resolve()
+    resolved_root = project_root.resolve()
+
+    try:
+        return str(
+            resolved_path.relative_to(resolved_root)
+        )
+    except ValueError:
+        return str(resolved_path)
+
+
+def mitsuba_vector_to_numpy(
+    vector: Any,
+) -> FloatArray:
+    """Convert a three-component Mitsuba vector to NumPy."""
+    return np.array(
+        [
+            float(vector[0]),
+            float(vector[1]),
+            float(vector[2]),
+        ],
+        dtype=np.float64,
+    )
 
 
 def _validate_positive_integer(
     value: int,
     name: str,
 ) -> None:
-    """Validate a positive integer setting."""
-
     if (
         isinstance(value, bool)
         or not isinstance(
@@ -753,8 +672,6 @@ def _validate_finite_positive(
     value: float,
     name: str,
 ) -> None:
-    """Validate a finite value greater than zero."""
-
     if (
         not np.isfinite(value)
         or value <= 0.0
@@ -765,28 +682,10 @@ def _validate_finite_positive(
         )
 
 
-def _validate_finite_non_negative(
-    value: float,
-    name: str,
-) -> None:
-    """Validate a finite non-negative value."""
-
-    if (
-        not np.isfinite(value)
-        or value < 0.0
-    ):
-        raise ValueError(
-            f"{name} must be finite "
-            "and non-negative."
-        )
-
-
 def _validate_vector3(
     vector: FloatArray,
     name: str,
 ) -> FloatArray:
-    """Validate a finite three-dimensional vector."""
-
     vector = np.asarray(
         vector,
         dtype=np.float64,
@@ -798,11 +697,7 @@ def _validate_vector3(
             f"got {vector.shape}."
         )
 
-    if not bool(
-        np.all(
-            np.isfinite(vector)
-        )
-    ):
+    if not bool(np.all(np.isfinite(vector))):
         raise ValueError(
             f"{name} must contain only "
             "finite values."

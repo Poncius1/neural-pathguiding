@@ -1,0 +1,34 @@
+experiment_name: simple_diffuse_incident_radiance_smoke_v1
+
+mitsuba:
+  variant: scalar_rgb
+
+scene:
+  type: xml
+  path: scenes/simple_diffuse/scene.xml
+
+camera:
+  origin: [0.0, 1.15, 4.5]
+  target: [0.0, 0.75, -0.4]
+  up: [0.0, 1.0, 0.0]
+  fov_degrees: 38.0
+  image_width: 512
+  image_height: 512
+
+bins:
+  n_mu: 4
+  n_phi: 8
+
+dataset:
+  num_shading_points: 16
+  max_sampling_attempts: 1000
+  seed: 42
+  output_path: data/simple_diffuse_incident_radiance_smoke_v1.npz
+
+teacher:
+  target_type: incident_radiance_v1
+  samples_per_bin: 2
+  radiance_samples: 2
+  smoothing: 0.000001
+  max_depth: 6
+  rr_depth: 3
