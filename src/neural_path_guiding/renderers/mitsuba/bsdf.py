@@ -1,4 +1,4 @@
-"""Mitsuba BSDF evaluation utilities for physical teachers.
+"""Mitsuba BSDF evaluation utilities for physical teachers and MIS.
 
 Mitsuba's BSDF.eval() returns the BSDF value already multiplied by
 the cosine foreshortening term. Callers must not multiply by cosine
@@ -26,14 +26,62 @@ def evaluate_bsdf_times_cosine(
     surface_interaction: Any,
     world_direction: FloatArray,
 ) -> FloatArray:
-    """Evaluate the smooth BSDF multiplied by its cosine term.
+    """Evaluate the smooth BSDF multiplied by its cosine term."""
 
-    The candidate world-space direction is transformed to the local
-    shading frame expected by Mitsuba.
+    bsdf, context, local_direction = _prepare_bsdf_query(
+        surface_interaction=surface_interaction,
+        world_direction=world_direction,
+    )
 
-    The original surface_interaction.wi remains the other BSDF
-    direction established by the ray that produced the intersection.
+    value = bsdf.eval(
+        context,
+        surface_interaction,
+        local_direction,
+    )
+
+    return mitsuba_bsdf_to_rgb(value)
+
+
+def evaluate_bsdf_pdf(
+    *,
+    surface_interaction: Any,
+    world_direction: FloatArray,
+) -> float:
+    """Evaluate the BSDF sampling PDF for a world-space direction.
+
+    The returned density is with respect to solid angle, like the neural
+    guiding PDF. Both proposals can therefore be compared by MIS as long
+    as they are evaluated for the same world-space direction.
     """
+
+    bsdf, context, local_direction = _prepare_bsdf_query(
+        surface_interaction=surface_interaction,
+        world_direction=world_direction,
+    )
+
+    value = float(
+        bsdf.pdf(
+            context,
+            surface_interaction,
+            local_direction,
+        )
+    )
+
+    if not np.isfinite(value) or value < 0.0:
+        raise ValueError(
+            "BSDF PDF must be finite and non-negative."
+        )
+
+    return value
+
+
+def _prepare_bsdf_query(
+    *,
+    surface_interaction: Any,
+    world_direction: FloatArray,
+) -> tuple[Any, Any, Any]:
+    """Normalize a world direction and prepare a Mitsuba BSDF query."""
+
     normalized_direction = normalize_numpy_vector(
         world_direction
     )
@@ -41,7 +89,6 @@ def evaluate_bsdf_times_cosine(
     mitsuba_direction = _mi.Vector3f(
         *normalized_direction
     )
-
     local_direction = surface_interaction.to_local(
         mitsuba_direction
     )
@@ -55,19 +102,14 @@ def evaluate_bsdf_times_cosine(
 
     context = _mi.BSDFContext()
 
-    value = bsdf.eval(
-        context,
-        surface_interaction,
-        local_direction,
-    )
-
-    return mitsuba_bsdf_to_rgb(value)
+    return bsdf, context, local_direction
 
 
 def mitsuba_bsdf_to_rgb(
     value: Any,
 ) -> FloatArray:
     """Convert a Mitsuba RGB BSDF value to a validated array."""
+
     rgb = np.array(
         [
             float(value[0]),

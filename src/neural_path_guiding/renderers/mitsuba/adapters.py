@@ -61,7 +61,7 @@ def normalize_numpy_vector(vector: FloatArray) -> FloatArray:
     if scale <= 0.0:
         raise ValueError("Cannot normalize a zero vector.")
 
-    scaled_vector = vector / scale
+    scaled_vector = np.divide(vector, scale)
     norm = float(np.linalg.norm(scaled_vector))
     if norm <= 0.0:
         raise ValueError("Cannot normalize a zero vector.")
