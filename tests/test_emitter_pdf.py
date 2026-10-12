@@ -1,4 +1,14 @@
-"""Unit tests for emitter PDF geometric consistency."""
+"""Unit tests for emitter PDF geometric consistency.
+
+Tests the current implementation of emitter_pdf.py.
+
+These tests validate:
+- PDF numerical inputs.
+- Geometric intersection compatibility.
+- Small ray-origin offsets.
+- Different shapes.
+- Invalid geometric intersections.
+"""
 
 from __future__ import annotations
 
@@ -7,16 +17,20 @@ import unittest
 import numpy as np
 
 from neural_path_guiding.renderers.mitsuba.emitter_pdf import (
-    _validate_intersections,
+    _compatible_emitter_intersections,
     _validate_pdf,
 )
 
 
 class FakeShape:
+    """Simple shape identity for unit testing."""
+
     pass
 
 
 class FakeInteraction:
+    """Minimal fake Mitsuba surface interaction."""
+
     def __init__(
         self,
         position,
@@ -28,7 +42,6 @@ class FakeInteraction:
             position,
             dtype=np.float64,
         )
-
         self._valid = valid
         self.shape = shape
 
@@ -45,12 +58,17 @@ class TestEmitterPdfValidation(unittest.TestCase):
             [0.0, 0.0, 0.0],
         )
 
-    def validate(self, visibility_hit, geometric_hit):
-        _validate_intersections(
+    def compatible(
+        self,
+        visibility_hit,
+        geometric_hit,
+        tolerance=1e-3,
+    ):
+        return _compatible_emitter_intersections(
             original_interaction=self.origin,
             visibility_hit=visibility_hit,
             geometric_hit=geometric_hit,
-            position_tolerance=1e-3,
+            position_tolerance=tolerance,
         )
 
     def test_identical_intersections(self):
@@ -64,9 +82,8 @@ class TestEmitterPdfValidation(unittest.TestCase):
             shape=self.shape,
         )
 
-        self.validate(
-            visibility,
-            geometric,
+        self.assertTrue(
+            self.compatible(visibility, geometric)
         )
 
     def test_small_offset_is_accepted(self):
@@ -80,9 +97,8 @@ class TestEmitterPdfValidation(unittest.TestCase):
             shape=self.shape,
         )
 
-        self.validate(
-            visibility,
-            geometric,
+        self.assertTrue(
+            self.compatible(visibility, geometric)
         )
 
     def test_large_offset_is_rejected(self):
@@ -96,14 +112,9 @@ class TestEmitterPdfValidation(unittest.TestCase):
             shape=self.shape,
         )
 
-        with self.assertRaisesRegex(
-            RuntimeError,
-            "geometric tolerance",
-        ):
-            self.validate(
-                visibility,
-                geometric,
-            )
+        self.assertFalse(
+            self.compatible(visibility, geometric)
+        )
 
     def test_different_shapes_are_rejected(self):
         visibility = FakeInteraction(
@@ -116,19 +127,13 @@ class TestEmitterPdfValidation(unittest.TestCase):
             shape=FakeShape(),
         )
 
-        with self.assertRaisesRegex(
-            RuntimeError,
-            "different shapes",
-        ):
-            self.validate(
-                visibility,
-                geometric,
-            )
+        self.assertFalse(
+            self.compatible(visibility, geometric)
+        )
 
-    def test_different_hit_status_is_rejected(self):
+    def test_invalid_geometric_intersection(self):
         visibility = FakeInteraction(
             [0.0, 0.0, 2.0],
-            valid=True,
             shape=self.shape,
         )
 
@@ -137,35 +142,23 @@ class TestEmitterPdfValidation(unittest.TestCase):
             valid=False,
         )
 
-        with self.assertRaisesRegex(
-            RuntimeError,
-            "disagree",
-        ):
-            self.validate(
-                visibility,
-                geometric,
-            )
+        self.assertFalse(
+            self.compatible(visibility, geometric)
+        )
 
-    def test_both_rays_miss(self):
+    def test_invalid_visibility_intersection(self):
         visibility = FakeInteraction(
             [0.0, 0.0, 0.0],
             valid=False,
         )
 
         geometric = FakeInteraction(
-            [0.0, 0.0, 0.0],
-            valid=False,
+            [0.0, 0.0, 2.0],
+            shape=self.shape,
         )
 
-        self.validate(
-            visibility,
-            geometric,
-        )
-
-    def test_valid_pdf(self):
-        self.assertEqual(
-            _validate_pdf(0.25),
-            0.25,
+        self.assertFalse(
+            self.compatible(visibility, geometric)
         )
 
     def test_zero_pdf(self):
@@ -174,13 +167,23 @@ class TestEmitterPdfValidation(unittest.TestCase):
             0.0,
         )
 
+    def test_positive_pdf(self):
+        self.assertEqual(
+            _validate_pdf(0.25),
+            0.25,
+        )
+
     def test_negative_pdf_is_rejected(self):
         with self.assertRaises(ValueError):
             _validate_pdf(-0.1)
 
-    def test_nonfinite_pdf_is_rejected(self):
+    def test_nan_pdf_is_rejected(self):
         with self.assertRaises(ValueError):
             _validate_pdf(float("nan"))
+
+    def test_infinite_pdf_is_rejected(self):
+        with self.assertRaises(ValueError):
+            _validate_pdf(float("inf"))
 
 
 if __name__ == "__main__":

@@ -4,26 +4,26 @@ Target:
     Mitsuba 3.8.0
     scalar_rgb
 
-Used for cross-PDF evaluation in Neural + BSDF + Light MIS.
+Used by Neural + BSDF + Light MIS.
 
-Two separate rays are used:
+The visibility-safe ray determines which emitter is reached.
 
-1. Visibility ray:
-   Spawned from the surface using Mitsuba's ray offset.
+For area emitters, a second ray from the original shading
+position is used only when its intersection is consistent
+with the visibility ray.
 
-2. Geometric ray:
-   Starts at the original shading position to reconstruct
-   the emitter sampling record accurately.
-
-Both intersections must agree before the geometric record
-is used for PDF evaluation.
+If the exact-origin ray suffers a self-intersection, the
+visibility-safe record is used instead.
 
 Limitations:
     - Scalar Mitsuba variants.
-    - Opaque surface transport.
+    - Opaque surfaces.
     - No participating media.
     - No null-transmission chains.
-    - Delta emitters require separate MIS treatment.
+    - Continuous, non-delta emitter PDFs only.
+
+The fallback can have a small geometric PDF discrepancy.
+This must be measured before claiming unbiased rendering.
 """
 
 from __future__ import annotations
@@ -42,23 +42,14 @@ from neural_path_guiding.renderers.mitsuba.adapters import (
 
 @dataclass(frozen=True)
 class EmitterPdfQuery:
-    """Result of an emitter PDF query."""
-
     direction_world: np.ndarray
     pdf: float
     hit_emitter: bool
     environment: bool
 
-
-def _zero_result(
-    direction: np.ndarray,
-) -> EmitterPdfQuery:
-    return EmitterPdfQuery(
-        direction_world=direction,
-        pdf=0.0,
-        hit_emitter=False,
-        environment=False,
-    )
+    # Diagnostic information.
+    used_geometric_hit: bool = False
+    used_visibility_fallback: bool = False
 
 
 def _validate_pdf(value: Any) -> float:
@@ -77,117 +68,121 @@ def _validate_pdf(value: Any) -> float:
     return pdf
 
 
-def _surface_position(
-    interaction: Any,
-) -> np.ndarray:
+def _zero_result(
+    direction: np.ndarray,
+) -> EmitterPdfQuery:
+    return EmitterPdfQuery(
+        direction_world=direction,
+        pdf=0.0,
+        hit_emitter=False,
+        environment=False,
+    )
+
+
+def _position(interaction: Any) -> np.ndarray:
     position = mitsuba_vector_to_numpy(
         interaction.p
     )
 
     if not np.all(np.isfinite(position)):
         raise ValueError(
-            "Surface position contains non-finite values."
+            "Non-finite surface position."
         )
 
     return position
 
 
-def _same_surface(
-    first_hit: Any,
-    second_hit: Any,
+def _same_shape(
+    first: Any,
+    second: Any,
 ) -> bool:
-    """Check whether two intersections correspond to one shape.
-
-    Shape identity alone is not sufficient to establish that the
-    same point was hit; position consistency is checked separately.
-    """
-
-    first_shape = first_hit.shape
-    second_shape = second_hit.shape
-
-    if first_shape is None or second_shape is None:
+    if not bool(first.is_valid()):
         return False
 
-    return bool(first_shape == second_shape)
+    if not bool(second.is_valid()):
+        return False
+
+    if first.shape is None or second.shape is None:
+        return False
+
+    return bool(
+        first.shape == second.shape
+    )
 
 
-def _validate_intersections(
+def _compatible_emitter_intersections(
     *,
     original_interaction: Any,
     visibility_hit: Any,
     geometric_hit: Any,
     position_tolerance: float,
-) -> None:
-    """Reject inconsistent visibility and geometric intersections."""
+) -> bool:
+    """Check if two hits describe the same visible emitter.
 
-    visibility_valid = bool(
-        visibility_hit.is_valid()
-    )
+    Returns False for inconsistent or self-intersecting
+    geometric rays. Never assumes that a nearby hit is
+    automatically the same emitter.
+    """
 
-    geometric_valid = bool(
-        geometric_hit.is_valid()
-    )
-
-    if visibility_valid != geometric_valid:
-        raise RuntimeError(
-            "Visibility and geometric rays disagree about "
-            "whether a surface was intersected. "
-            "Possible self-intersection or ray-offset issue."
-        )
-
-    if not visibility_valid:
-        return
-
-    if not _same_surface(
+    if not _same_shape(
         visibility_hit,
         geometric_hit,
     ):
-        raise RuntimeError(
-            "Visibility and geometric rays intersected "
-            "different shapes."
-        )
+        return False
 
-    visibility_position = _surface_position(
+    p_visibility = _position(
         visibility_hit
     )
 
-    geometric_position = _surface_position(
+    p_geometric = _position(
         geometric_hit
     )
 
-    reference_position = _surface_position(
+    p_origin = _position(
         original_interaction
     )
 
     difference = float(
         np.linalg.norm(
-            visibility_position - geometric_position
+            p_visibility - p_geometric
         )
     )
 
-    travel_distance = float(
+    distance = float(
         np.linalg.norm(
-            geometric_position - reference_position
+            p_geometric - p_origin
         )
     )
 
-    # A scale-aware tolerance for the small displacement
-    # introduced by Mitsuba's ray offset.
-    #
-    # This tolerance does not control PDF agreement.
-    # It only checks that both rays hit compatible geometry.
     allowed_difference = (
         position_tolerance
-        * max(1.0, travel_distance)
+        * max(1.0, distance)
     )
 
-    if difference > allowed_difference:
-        raise RuntimeError(
-            "Visibility and geometric intersections differ "
-            "by more than the allowed geometric tolerance. "
-            f"Difference: {difference:.9g}, "
-            f"allowed: {allowed_difference:.9g}."
+    return difference <= allowed_difference
+
+
+def _direction_sample_pdf(
+    *,
+    scene: Any,
+    interaction: Any,
+    emitter_hit: Any,
+) -> float:
+    """Build a DirectionSample3f and evaluate its PDF."""
+
+    direction_sample = mi.DirectionSample3f(
+        scene,
+        si=emitter_hit,
+        ref=interaction,
+    )
+
+    return _validate_pdf(
+        scene.pdf_emitter_direction(
+            interaction,
+            direction_sample,
+            True,
         )
+    )
 
 
 def evaluate_emitter_pdf(
@@ -197,33 +192,21 @@ def evaluate_emitter_pdf(
     world_direction: np.ndarray,
     position_tolerance: float = 1e-3,
 ) -> EmitterPdfQuery:
-    """Evaluate the emitter PDF for an arbitrary world direction.
+    """Evaluate emitter PDF in solid angle.
 
-    Args:
-        scene:
-            Mitsuba scene.
+    Strategy:
 
-        interaction:
-            Original shading point.
+    1. Trace a visibility-safe ray.
+    2. Return zero if the first surface is non-emissive.
+    3. For environment rays, use the visibility-safe miss.
+    4. For area emitters, attempt exact-origin reconstruction.
+    5. Use exact geometry only when both hits agree.
+    6. Otherwise fall back to the visibility-safe emitter hit.
 
-        world_direction:
-            World-space direction generated by another proposal.
+    The visibility ray is authoritative for identifying
+    which emitter is reached.
 
-        position_tolerance:
-            Scale-aware tolerance used only for comparing
-            the two intersections.
-
-    Returns:
-        EmitterPdfQuery with the solid-angle emitter PDF.
-
-    Raises:
-        RuntimeError:
-            If geometric reconstruction conflicts with
-            the visibility intersection.
-
-    Notes:
-        The geometric ray must never be substituted for
-        a visibility-safe ray in the renderer.
+    A fallback is recorded explicitly for later diagnostics.
     """
 
     if (
@@ -231,7 +214,7 @@ def evaluate_emitter_pdf(
         or position_tolerance <= 0.0
     ):
         raise ValueError(
-            "position_tolerance must be positive and finite."
+            "position_tolerance must be finite and positive."
         )
 
     direction = normalize_numpy_vector(
@@ -244,9 +227,9 @@ def evaluate_emitter_pdf(
         float(direction[2]),
     )
 
-    # -------------------------------------------------
-    # 1. Visibility-safe ray
-    # -------------------------------------------------
+    # --------------------------------------------------
+    # 1. Trace a visibility-safe ray.
+    # --------------------------------------------------
 
     visibility_ray = interaction.spawn_ray(
         mi_direction
@@ -260,28 +243,51 @@ def evaluate_emitter_pdf(
         visibility_hit.is_valid()
     )
 
-    if visibility_valid:
-        visibility_emitter = (
-            visibility_hit.emitter(scene)
+    # --------------------------------------------------
+    # 2. Handle environment directions.
+    # --------------------------------------------------
+
+    if not visibility_valid:
+
+        environment = scene.environment()
+
+        if environment is None:
+            return _zero_result(direction)
+
+        # No second geometric ray is necessary.
+        # The visibility-safe ray already established
+        # that the direction reaches the environment.
+        pdf = _direction_sample_pdf(
+            scene=scene,
+            interaction=interaction,
+            emitter_hit=visibility_hit,
         )
 
-        # The first visible surface is not emissive.
-        if visibility_emitter is None:
-            return _zero_result(direction)
+        return EmitterPdfQuery(
+            direction_world=direction,
+            pdf=pdf,
+            hit_emitter=True,
+            environment=True,
+            used_geometric_hit=False,
+            used_visibility_fallback=False,
+        )
 
-        is_environment = False
+    # --------------------------------------------------
+    # 3. Check the first visible surface.
+    # --------------------------------------------------
 
-    else:
-        visibility_emitter = scene.environment()
+    visibility_emitter = visibility_hit.emitter(
+        scene
+    )
 
-        if visibility_emitter is None:
-            return _zero_result(direction)
+    if visibility_emitter is None:
+        # The direction reaches an opaque,
+        # non-emissive surface first.
+        return _zero_result(direction)
 
-        is_environment = True
-
-    # -------------------------------------------------
-    # 2. Ray from the exact shading position
-    # -------------------------------------------------
+    # --------------------------------------------------
+    # 4. Attempt more precise geometric reconstruction.
+    # --------------------------------------------------
 
     geometric_ray = mi.Ray3f(
         interaction.p,
@@ -293,76 +299,61 @@ def evaluate_emitter_pdf(
         geometric_ray
     )
 
-    # -------------------------------------------------
-    # 3. Check geometric consistency
-    # -------------------------------------------------
+    # --------------------------------------------------
+    # 5. Use geometric hit only when consistent.
+    # --------------------------------------------------
 
-    _validate_intersections(
+    compatible = _compatible_emitter_intersections(
         original_interaction=interaction,
         visibility_hit=visibility_hit,
         geometric_hit=geometric_hit,
         position_tolerance=position_tolerance,
     )
 
-    # -------------------------------------------------
-    # 4. Confirm emitter consistency
-    # -------------------------------------------------
+    if compatible:
 
-    if is_environment:
-        if bool(geometric_hit.is_valid()):
-            raise RuntimeError(
-                "The geometric ray hit a surface, but "
-                "the visibility ray reached the environment."
-            )
-
-    else:
-        geometric_emitter = (
-            geometric_hit.emitter(scene)
+        geometric_emitter = geometric_hit.emitter(
+            scene
         )
 
-        if geometric_emitter is None:
-            raise RuntimeError(
-                "The geometric ray did not reach "
-                "an emitter."
+        if geometric_emitter is not None:
+
+            pdf = _direction_sample_pdf(
+                scene=scene,
+                interaction=interaction,
+                emitter_hit=geometric_hit,
             )
 
-        if not _same_surface(
-            visibility_hit,
-            geometric_hit,
-        ):
-            raise RuntimeError(
-                "Emitter surface mismatch."
+            return EmitterPdfQuery(
+                direction_world=direction,
+                pdf=pdf,
+                hit_emitter=True,
+                environment=False,
+                used_geometric_hit=True,
+                used_visibility_fallback=False,
             )
 
-    # -------------------------------------------------
-    # 5. Build the geometric direction sample
-    # -------------------------------------------------
+    # --------------------------------------------------
+    # 6. Fall back to the visibility-safe emitter record.
+    # --------------------------------------------------
 
-    direction_sample = mi.DirectionSample3f(
-        scene,
-        si=geometric_hit,
-        ref=interaction,
+    # We do not discard the sample and do not assume
+    # that the emitter PDF is zero.
+    #
+    # This avoids a hard failure but may introduce
+    # a small numerical PDF discrepancy because the
+    # emitter intersection came from an offset ray.
+    pdf = _direction_sample_pdf(
+        scene=scene,
+        interaction=interaction,
+        emitter_hit=visibility_hit,
     )
-
-    # -------------------------------------------------
-    # 6. Evaluate continuous emitter PDF
-    # -------------------------------------------------
-
-    emitter_pdf = _validate_pdf(
-        scene.pdf_emitter_direction(
-            interaction,
-            direction_sample,
-            True,
-        )
-    )
-
-    # -------------------------------------------------
-    # 7. Return query
-    # -------------------------------------------------
 
     return EmitterPdfQuery(
         direction_world=direction,
-        pdf=emitter_pdf,
+        pdf=pdf,
         hit_emitter=True,
-        environment=is_environment,
+        environment=False,
+        used_geometric_hit=False,
+        used_visibility_fallback=True,
     )
