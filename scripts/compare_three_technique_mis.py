@@ -1,11 +1,7 @@
-"""Compare Neural + BSDF + Light MIS against three-sample baselines.
+"""Compare Neural + BSDF + Light MIS at one fixed surface point.
 
-Mitsuba 3.8.0, scalar_rgb. Fixed surface interaction only.
-Continuous, non-delta BSDFs and emitters.
-
-Run:
-    python -u scripts/compare_three_technique_mis.py \
-        --repetitions 100 --reference-samples 1000 --seed 42
+Mitsuba 3.8.0, scalar_rgb.
+Includes emitter cross-PDF diagnostics for the MIS estimator.
 """
 
 from __future__ import annotations
@@ -45,6 +41,7 @@ from neural_path_guiding.renderers.mitsuba.bsdf import (
     evaluate_bsdf_pdf,
 )
 from neural_path_guiding.renderers.mitsuba.emitter_pdf import (
+    EmitterPdfStats,
     evaluate_emitter_pdf,
 )
 from neural_path_guiding.renderers.mitsuba.guiding_adapter import (
@@ -57,7 +54,7 @@ from neural_path_guiding.training.inference import (
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Three-technique direct-light MIS comparison."
+        description="Three-technique direct MIS with PDF diagnostics."
     )
 
     parser.add_argument(
@@ -84,6 +81,7 @@ def parse_arguments() -> argparse.Namespace:
         type=Path,
         default=Path("outputs/experiments"),
     )
+
     return parser.parse_args()
 
 
@@ -91,11 +89,6 @@ def mis_weight(
     densities: tuple[float, float, float],
     technique_index: int,
 ) -> float:
-    """Compute MIS weight for one sample of each technique.
-
-    Density order: neural, BSDF, light.
-    """
-
     values = np.asarray(densities, dtype=np.float64)
 
     if not np.all(np.isfinite(values)):
@@ -121,24 +114,18 @@ def estimate_three_technique_mis(
     interaction: Any,
     proposal: Any,
     rng: np.random.Generator,
+    *,
+    pdf_stats: EmitterPdfStats | None = None,
 ) -> np.ndarray:
-    """Combine one neural, one BSDF, and one emitter sample.
+    """One neural, one BSDF and one emitter sample.
 
-    For neural/BSDF samples:
-        contribution = f(direction) / own_pdf * MIS_weight
-
-    For light samples:
-        Mitsuba already returns Li / emitter_pdf.
-        Multiply by BSDF*cosine and the MIS weight.
-        Never divide by emitter_pdf a second time.
+    The stats object records the two cross-PDF queries:
+    light PDF at the neural and BSDF sampled directions.
     """
 
     result = np.zeros(3, dtype=np.float64)
 
-    # --------------------------------------------------------
-    # 1. Neural sample
-    # --------------------------------------------------------
-
+    # Neural sample.
     neural_sample = proposal.sample(rng)
     neural_direction = neural_sample.direction_world
     p_neural = float(neural_sample.pdf)
@@ -152,25 +139,25 @@ def estimate_three_technique_mis(
         scene=scene,
         interaction=interaction,
         world_direction=neural_direction,
+        stats=pdf_stats,
     ).pdf
 
-    w_neural = mis_weight(
+    neural_weight = mis_weight(
         (p_neural, p_bsdf_at_neural, p_light_at_neural),
         technique_index=0,
     )
 
-    f_neural = evaluate_direct_integrand(
+    neural_integrand = evaluate_direct_integrand(
         scene,
         interaction,
         neural_direction,
     )
 
-    result += w_neural * f_neural / p_neural
+    result += (
+        neural_weight * neural_integrand / p_neural
+    )
 
-    # --------------------------------------------------------
-    # 2. BSDF sample
-    # --------------------------------------------------------
-
+    # BSDF sample.
     bsdf_direction, p_bsdf = sample_bsdf_direction(
         interaction,
         rng,
@@ -184,25 +171,25 @@ def estimate_three_technique_mis(
         scene=scene,
         interaction=interaction,
         world_direction=bsdf_direction,
+        stats=pdf_stats,
     ).pdf
 
-    w_bsdf = mis_weight(
+    bsdf_weight = mis_weight(
         (p_neural_at_bsdf, p_bsdf, p_light_at_bsdf),
         technique_index=1,
     )
 
-    f_bsdf = evaluate_direct_integrand(
+    bsdf_integrand = evaluate_direct_integrand(
         scene,
         interaction,
         bsdf_direction,
     )
 
-    result += w_bsdf * f_bsdf / p_bsdf
+    result += (
+        bsdf_weight * bsdf_integrand / p_bsdf
+    )
 
-    # --------------------------------------------------------
-    # 3. Light sample
-    # --------------------------------------------------------
-
+    # Light sample.
     (
         light_direction,
         p_light,
@@ -223,24 +210,21 @@ def estimate_three_technique_mis(
             world_direction=light_direction,
         )
 
-        w_light = mis_weight(
+        light_weight = mis_weight(
             (p_neural_at_light, p_bsdf_at_light, p_light),
             technique_index=2,
         )
 
+        # Mitsuba's light sample is already divided by p_light.
         result += (
-            w_light * light_contribution_over_pdf
+            light_weight * light_contribution_over_pdf
         )
-
-    # If the emitter sample has zero PDF and zero contribution,
-    # its contribution to the estimator is zero. It still
-    # represents one light sampling attempt.
 
     if result.shape != (3,):
         raise RuntimeError("MIS result must have RGB shape (3,).")
 
     if not np.all(np.isfinite(result)):
-        raise ValueError("MIS produced non-finite RGB values.")
+        raise ValueError("MIS produced non-finite RGB.")
 
     return result
 
@@ -319,7 +303,7 @@ def main() -> None:
     print(f"Mitsuba: {mi.__version__}", flush=True)
     print(f"Seed: {args.seed}", flush=True)
 
-    # Independent light-sampling reference.
+    # Independent reference.
     print("Calculating reference...", flush=True)
 
     reference_values, reference_seconds = run_repetitions(
@@ -340,7 +324,9 @@ def main() -> None:
     print(f"Reference RGB: {reference_rgb}", flush=True)
     print(f"Reference SE: {reference_se}", flush=True)
 
-    # Equal proposal-sample budgets: three samples each.
+    # Independent counters for this experiment.
+    pdf_stats = EmitterPdfStats()
+
     estimators = {
         "neural_3": lambda rng: estimate_neural(
             scene, interaction, proposal, rng, 3
@@ -353,7 +339,11 @@ def main() -> None:
         ),
         "neural_bsdf_light_mis_3": lambda rng:
             estimate_three_technique_mis(
-                scene, interaction, proposal, rng
+                scene,
+                interaction,
+                proposal,
+                rng,
+                pdf_stats=pdf_stats,
             ),
     }
 
@@ -387,7 +377,6 @@ def main() -> None:
         )
         metrics["proposal_samples_per_estimate"] = 3
 
-        # Compare independent mean estimates with uncertainty.
         estimate_se = np.asarray(
             metrics["standard_error_rgb"],
             dtype=np.float64,
@@ -398,7 +387,7 @@ def main() -> None:
         )
 
         difference = (
-            np.asarray(metrics["mean_rgb"])
+            np.asarray(metrics["mean_rgb"], dtype=np.float64)
             - reference_rgb
         )
 
@@ -406,10 +395,21 @@ def main() -> None:
             np.divide(
                 difference,
                 combined_se,
-                out=np.zeros(3),
+                out=np.zeros(3, dtype=np.float64),
                 where=combined_se > 0.0,
             ).tolist()
         )
+
+        if name == "neural_bsdf_light_mis_3":
+            if pdf_stats.total_queries != 2 * args.repetitions:
+                raise RuntimeError(
+                    "Expected exactly two emitter cross-PDF "
+                    "queries per completed MIS estimate."
+                )
+
+            metrics["emitter_pdf_diagnostics"] = (
+                pdf_stats.to_dict()
+            )
 
         results[name] = metrics
 
@@ -436,8 +436,6 @@ def main() -> None:
     )
     output_path.mkdir(parents=True, exist_ok=False)
 
-    # np.savez_compressed does not take allow_pickle.
-    # All saved arrays here are numeric.
     np.savez_compressed(
         output_path / "estimates.npz",
         reference_samples=reference_values,
@@ -467,6 +465,7 @@ def main() -> None:
         "reference_standard_error_rgb": reference_se.tolist(),
         "reference_seconds": reference_seconds,
         "uniform_mix": args.uniform_mix,
+        "emitter_pdf_diagnostics": pdf_stats.to_dict(),
         "estimators": results,
         "limitations": [
             "Fixed-point direct-light experiment",
@@ -475,6 +474,7 @@ def main() -> None:
             "Equal proposal samples, not equal execution time",
             "Neural checkpoint may be overfitted",
             "Reference has Monte Carlo uncertainty",
+            "Visibility fallback has not been proven unbiased",
         ],
     }
 
@@ -500,6 +500,12 @@ def main() -> None:
             f"var={metrics['luminance_variance']:.6e} "
             f"rmse={metrics['rmse_rgb']:.6e}"
         )
+
+    print()
+    print("=== EMITTER PDF DIAGNOSTICS ===")
+
+    for key, value in pdf_stats.to_dict().items():
+        print(f"{key}: {value}")
 
     print(f"Results: {output_path.resolve()}")
     print("Experiment completed.", flush=True)
