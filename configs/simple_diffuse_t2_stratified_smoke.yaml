@@ -1,0 +1,39 @@
+experiment_name: simple_diffuse_t2_stratified_smoke_v2
+mitsuba:
+  variant: scalar_rgb
+scene:
+  type: xml
+  path: scenes/simple_diffuse/scene.xml
+camera:
+  origin: [0.0, 1.15, 4.5]
+  target: [0.0, 0.75, -0.4]
+  up: [0.0, 1.0, 0.0]
+  fov_degrees: 38.0
+  image_width: 512
+  image_height: 512
+bins:
+  n_mu: 4
+  n_phi: 8
+dataset:
+  num_shading_points: 36
+  max_sampling_attempts: 50000
+  seed: 42
+  split_seed: 2026
+  output_path: data/simple_diffuse_t2_stratified_smoke_v2.npz
+  material_quotas:
+    dark_gray:
+      albedo: [0.45, 0.45, 0.45]
+      count: 12
+    blue:
+      albedo: [0.25, 0.38, 0.85]
+      count: 12
+    light_gray:
+      albedo: [0.72, 0.72, 0.72]
+      count: 12
+teacher:
+  target_type: product_integrand_v1
+  samples_per_bin: 16
+  radiance_samples: 4
+  smoothing: 0.000001
+  max_depth: 6
+  rr_depth: 3
