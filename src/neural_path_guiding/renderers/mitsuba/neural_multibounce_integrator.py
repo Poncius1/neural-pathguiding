@@ -135,44 +135,43 @@ class NeuralT2MultibounceIntegrator(mi.SamplingIntegrator):
             ),
         })
 
+    
     def _prepare_proposal(
         self,
         si: Any,
         ray: Any,
     ) -> GuidingProposal:
-        """Prepare a directional proposal at the first surface."""
-
-        normal = mitsuba_vector_to_numpy(si.n)
-
-        # Match the local frame convention used by the T2 teacher.
-        frame = build_frame_from_normal(normal)
+        """Build a directional proposal in the canonical T2 frame."""
 
         if self.mode == "uniform_bsdf_mis":
-            assert self.uniform_distribution is not None
+            if self.uniform_distribution is None:
+                raise RuntimeError(
+                    "Uniform distribution is not initialized"
+                )
 
-            distribution = self.uniform_distribution
+            return NeuralMitsubaRuntimeV2.proposal_from_distribution(
+                si,
+                self.uniform_distribution,
+            )
 
-        elif self.mode == "neural_bsdf_mis":
-            assert self.runtime is not None
+        if self.mode == "neural_bsdf_mis":
+            if self.runtime is None:
+                raise RuntimeError(
+                    "Neural runtime is not initialized"
+                )
 
             outgoing = normalize_numpy_vector(
                 -mitsuba_vector_to_numpy(ray.d)
             )
 
-            distribution = self.runtime.distribution_at(
+            return self.runtime.proposal_at(
                 si,
                 outgoing_world=outgoing,
                 bounce_depth=0,
             )
 
-        else:
-            raise RuntimeError(
-                "bsdf_only does not require a directional proposal"
-            )
-
-        return GuidingProposal(
-            frame=frame,
-            distribution=distribution,
+        raise RuntimeError(
+            f"Mode '{self.mode}' does not use a guiding proposal"
         )
 
     def _sample_bsdf(
