@@ -1,6 +1,6 @@
-"""Render BSDF, uniform and T2 guided paths with the same transport loop.
+"""Render the canonical single-loop transport controls and record manifest v1.
 
-Run with python -m scripts.render_transport_controls ... from repository root.
+Usage: python -m scripts.render_transport_controls --modes path bsdf uniform neural
 """
 from __future__ import annotations
 
@@ -14,7 +14,12 @@ from typing import Any
 import mitsuba as mi
 import numpy as np
 
-from scripts.compare_direct_mis_estimators import sha256_file
+from neural_path_guiding.evaluation.image_io import load_image_as_array
+from neural_path_guiding.evaluation.transport_metrics import (
+    file_sha256,
+    summarize_transport_image,
+    validate_rgb_image,
+)
 
 _mi: Any = mi
 
@@ -40,10 +45,21 @@ def arguments() -> argparse.Namespace:
 
 
 def load_rgb(path: Path) -> np.ndarray:
-    a = np.asarray(_mi.Bitmap(str(path)), dtype=np.float64)[:, :, :3]
-    if a.ndim != 3 or a.shape[2] != 3 or not np.all(np.isfinite(a)):
-        raise ValueError(f"Invalid EXR: {path}")
-    return a
+    """Compatibility wrapper for callers of this script's previous API."""
+    return validate_rgb_image(load_image_as_array(path), name=str(path))
+
+
+def build_integrator_properties(args: argparse.Namespace, mode: str) -> dict[str, object]:
+    props: dict[str, object] = {
+        "type": "path" if mode == "path" else "npg_transport",
+        "max_depth": args.max_depth,
+        "rr_depth": args.rr_depth,
+    }
+    if mode != "path":
+        props.update(mode=mode, guiding_probability=args.guiding_probability)
+    if mode == "neural":
+        props.update(checkpoint=str(args.checkpoint.resolve()), uniform_mix=args.uniform_mix)
+    return props
 
 
 def main() -> None:
@@ -52,6 +68,8 @@ def main() -> None:
         raise ValueError("Dimensions, spp and depths must be positive")
     if args.seed < 0 or not 0 < args.guiding_probability < 1:
         raise ValueError("Invalid seed or guiding probability")
+    if not 0 < args.uniform_mix <= 1:
+        raise ValueError("uniform_mix must be in (0, 1]")
     if not args.scene.is_file():
         raise FileNotFoundError(args.scene)
     if "neural" in args.modes and not args.checkpoint.is_file():
@@ -74,17 +92,10 @@ def main() -> None:
 
     out = args.out / datetime.now(timezone.utc).strftime("run_%Y%m%dT%H%M%S%fZ")
     out.mkdir(parents=True, exist_ok=False)
-    results = {}
-    w = np.array([.2126, .7152, .0722])
+    results: dict[str, dict[str, object]] = {}
 
     for mode in args.modes:
-        props = {"type": "path" if mode == "path" else "npg_transport",
-                 "max_depth": args.max_depth, "rr_depth": args.rr_depth}
-        if mode != "path":
-            props.update(mode=mode, guiding_probability=args.guiding_probability)
-        if mode == "neural":
-            props.update(checkpoint=str(args.checkpoint.resolve()), uniform_mix=args.uniform_mix)
-        integrator = _mi.load_dict(props)
+        integrator = _mi.load_dict(build_integrator_properties(args, mode))
         print(f"Rendering {mode}...", flush=True)
         start = perf_counter()
         rendered = _mi.render(scene, integrator=integrator, spp=args.spp, seed=args.seed)
@@ -92,22 +103,13 @@ def main() -> None:
         output_path = out / f"{mode}.exr"
         _mi.Bitmap(rendered).write(str(output_path))
         rgb = load_rgb(output_path)
-        luminance = rgb @ w
-        item = {
-            "seconds": elapsed,
-            "mean_luminance": float(luminance.mean()),
-            "max_luminance": float(luminance.max()),
-            "zero_pixels": int(np.sum(np.all(rgb == 0.0, axis=-1))),
-        }
-        if reference is not None:
-            error = rgb - reference
-            item["rgb_mse"] = float(np.mean(error**2))
-            item["rgb_mae"] = float(np.mean(np.abs(error)))
-            item["mean_rgb_error"] = error.mean(axis=(0, 1)).tolist()
+        item = summarize_transport_image(rgb, seconds=elapsed, reference=reference)
         results[mode] = item
         print(f" {elapsed:.3f}s, mean L={item['mean_luminance']:.6f}, "
               f"MSE={item.get('rgb_mse', float('nan')):.7f}", flush=True)
 
+    # Keep manifest schema unchanged so historical runs and the aggregation
+    # script can be grouped together without migration.
     manifest = {
         "experiment": "single_loop_transport_controls",
         "scope": "surface scalar_rgb; first-hit diffuse-only guiding",
@@ -118,11 +120,11 @@ def main() -> None:
             "A single seed is not an unbiasedness or variance validation",
         ],
         "scene": str(args.scene.resolve()),
-        "scene_sha256": sha256_file(args.scene),
+        "scene_sha256": file_sha256(args.scene),
         "checkpoint": str(args.checkpoint.resolve()) if "neural" in args.modes else None,
-        "checkpoint_sha256": sha256_file(args.checkpoint) if "neural" in args.modes else None,
+        "checkpoint_sha256": file_sha256(args.checkpoint) if "neural" in args.modes else None,
         "reference": str(args.reference.resolve()) if args.reference else None,
-        "reference_sha256": sha256_file(args.reference) if args.reference else None,
+        "reference_sha256": file_sha256(args.reference) if args.reference else None,
         "settings": {k: getattr(args, k) for k in (
             "width", "height", "spp", "seed", "max_depth", "rr_depth",
             "guiding_probability", "uniform_mix", "modes")},
