@@ -26,7 +26,7 @@ from typing import Any, cast
 import mitsuba as mi
 import numpy as np
 
-from scripts.compare_direct_mis_estimators import (
+from neural_path_guiding.evaluation.direct_estimators import (
     evaluate_direct_integrand,
     sample_fixed_surface,
 )

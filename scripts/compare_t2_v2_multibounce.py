@@ -20,7 +20,7 @@ from typing import Any, Callable, cast
 import mitsuba as mi
 import numpy as np
 
-from scripts.compare_direct_mis_estimators import (
+from neural_path_guiding.evaluation.direct_estimators import (
     _LUMINANCE_WEIGHTS,
     sample_fixed_surface,
     sha256_file,

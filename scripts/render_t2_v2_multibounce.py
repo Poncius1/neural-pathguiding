@@ -24,7 +24,7 @@ from typing import Any
 import mitsuba as mi
 import numpy as np
 
-from scripts.compare_direct_mis_estimators import sha256_file
+from neural_path_guiding.evaluation.direct_estimators import sha256_file
 
 # Workaround for dynamically generated Mitsuba bindings in Pylance.
 _mi: Any = mi

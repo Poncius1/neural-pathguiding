@@ -33,7 +33,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from scripts.compare_direct_mis_estimators import (
+from neural_path_guiding.evaluation.direct_estimators import (
     _LUMINANCE_WEIGHTS,
     estimate_bsdf,
     estimate_light,
